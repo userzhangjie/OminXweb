@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="prefetch" href="web1.html" as="document" />
+    <title>仲央OmniX</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+        overscroll-behavior: none;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      html::-webkit-scrollbar,
+      body::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      .frame {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        margin: 0;
+        padding: 0;
+        background: #000;
+        color-scheme: dark;
+        will-change: transform, opacity;
+        transition:
+          transform 0.56s cubic-bezier(0.65, 0, 0.35, 1),
+          opacity 0.56s cubic-bezier(0.65, 0, 0.35, 1);
+      }
+      .frame.no-trans {
+        transition: none !important;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .frame {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <!-- web1 parks below the viewport (translateY(100%), opacity 0) until it slides up. -->
+      <iframe id="web1-frame" class="frame" src="about:blank" data-src="web1.html" loading="eager" title="web1"></iframe>
+      <iframe id="web2-frame" class="frame" src="web2.html" loading="eager" title="web2"></iframe>
+    </div>
+    <script>
+      (function () {
+        var f2 = document.getElementById("web2-frame");
+        var f1 = document.getElementById("web1-frame");
+
+        var FADE_OUT = 320; // outgoing fades out fully, in place, before any slide
+        var SLIDE = 560; // incoming slides in (+ fades in) after the fade-out
+        var LEAD = 70; // unpause the incoming site this long before it slides in
+
+        var active = "web2"; // web2 is visible first
+        var busy = false;
+        var web1Loaded = false; // web1 is preloaded shortly after web2 has painted
+        var web1Ready = false;
+        var pendingWeb1Ready = null;
+        var preloadHandle = null;
+        var preloadUsesIdle = false;
+
+        function send(frame, msg) {
+          try {
+            frame.contentWindow.postMessage(msg, "*");
+          } catch (e) {}
+        }
+
+        function ensureWeb1Loaded() {
+          if (web1Loaded) return;
+          web1Loaded = true;
+          f1.src = f1.getAttribute("data-src") || "web1.html";
+        }
+
+        function preloadWeb1(urgent) {
+          if (web1Loaded) return;
+          if (preloadHandle) {
+            if (!urgent) return;
+            if (preloadUsesIdle && "cancelIdleCallback" in window) {
+              window.cancelIdleCallback(preloadHandle);
+            } else {
+              window.clearTimeout(preloadHandle);
+            }
+            preloadHandle = null;
+          }
+          var start = function () {
+            preloadHandle = null;
+            preloadUsesIdle = false;
+            ensureWeb1Loaded();
+          };
+          if (urgent) {
+            start();
+            return;
+          }
+          if ("requestIdleCallback" in window) {
+            preloadUsesIdle = true;
+            preloadHandle = window.requestIdleCallback(start, { timeout: 900 });
+          } else {
+            preloadUsesIdle = false;
+            preloadHandle = window.setTimeout(start, 220);
+          }
+        }
+
+        function showImmediate(which) {
+          var top = which === "web2" ? f2 : f1;
+          var other = which === "web2" ? f1 : f2;
+          var offPos = which === "web2" ? "translateY(100%)" : "translateY(-100%)";
+          top.classList.add("no-trans");
+          top.style.zIndex = "3";
+          top.style.opacity = "1";
+          top.style.transform = "translateY(0)";
+          top.style.visibility = "visible";
+          top.style.pointerEvents = "auto";
+          top.classList.remove("no-trans");
+          other.classList.add("no-trans");
+          other.style.zIndex = "2";
+          other.style.opacity = "0";
+          other.style.transform = offPos;
+          other.style.visibility = "visible";
+          other.style.pointerEvents = "none";
+          other.classList.remove("no-trans");
+        }
+
+        // Commit a position + opacity instantly (no transition).
+        function setStart(frame, pos, op) {
+          frame.classList.add("no-trans");
+          frame.style.transform = pos;
+          frame.style.opacity = op;
+          void frame.offsetHeight;
+          frame.classList.remove("no-trans");
+        }
+
+        // ---- scroll DOWN: web2 (last page) -> web1 (first page) -------------
+        // 1) web2 fades out fully, in place.
+        // 2) only then web1 slides up & in from below (fading in).
+        function toWeb1() {
+          if (busy || active !== "web2") return;
+          busy = true;
+          active = "web1";
+          ensureWeb1Loaded();
+
+          // Phase 1: freeze web2 immediately (no last-page logic / spiral motion
+          // during the fade), then fade it out in place.
+          send(f2, { cmd: "deactivate" });
+          setStart(f2, "translateY(0)", "1");
+          f2.style.pointerEvents = "none";
+          f2.style.transitionDuration = FADE_OUT + "ms";
+          requestAnimationFrame(function () {
+            f2.style.opacity = "0";
+          });
+
+          var fadeDone = false;
+          var w1Ready = web1Ready;
+          function tryPhase2() {
+            if (!(fadeDone && w1Ready)) return;
+            // Phase 2: park web2, wake web1, slide it in.
+            send(f2, { cmd: "deactivate" });
+            setStart(f2, "translateY(-100%)", "0");
+            send(f1, { cmd: "gotoFirst" });
+            window.setTimeout(function () {
+              setStart(f1, "translateY(100%)", "0");
+              f1.style.transitionDuration = SLIDE + "ms";
+              f1.style.pointerEvents = "none";
+              requestAnimationFrame(function () {
+                f1.style.transform = "translateY(0)";
+                f1.style.opacity = "1";
+              });
+              window.setTimeout(function () {
+                f1.style.pointerEvents = "auto";
+                send(f1, { cmd: "activate" });
+                busy = false;
+              }, SLIDE + 40);
+            }, LEAD);
+          }
+          if (!w1Ready) {
+            pendingWeb1Ready = function () {
+              w1Ready = true;
+              tryPhase2();
+            };
+          }
+          window.setTimeout(function () {
+            fadeDone = true;
+            tryPhase2();
+          }, FADE_OUT + 30);
+        }
+
+        // ---- scroll UP: web1 (first page) -> web2 (last page) ---------------
+        // 1) web1 fades out fully, in place.
+        // 2) only then web2 slides down & in from the top (fading in).
+        function toWeb2() {
+          if (busy || active !== "web1") return;
+          busy = true;
+          active = "web2";
+
+          // Phase 1: fade web1 out in place.
+          setStart(f1, "translateY(0)", "1");
+          f1.style.pointerEvents = "none";
+          f1.style.transitionDuration = FADE_OUT + "ms";
+          requestAnimationFrame(function () {
+            f1.style.opacity = "0";
+          });
+
+          window.setTimeout(function () {
+            // Phase 2: park web1, wake web2, slide it in.
+            send(f1, { cmd: "deactivate" });
+            setStart(f1, "translateY(100%)", "0");
+            send(f2, { cmd: "gotoLast" });
+            window.setTimeout(function () {
+              // web2 fades in directly in place — no slide.
+              setStart(f2, "translateY(0)", "0");
+              f2.style.transitionDuration = FADE_OUT + "ms";
+              f2.style.pointerEvents = "none";
+              requestAnimationFrame(function () {
+                f2.style.opacity = "1";
+              });
+              window.setTimeout(function () {
+                f2.style.pointerEvents = "auto";
+                send(f2, { cmd: "activate" });
+                busy = false;
+              }, FADE_OUT + 40);
+            }, LEAD);
+          }, FADE_OUT + 30);
+        }
+
+        // ---- messaging ------------------------------------------------------
+        window.addEventListener("message", function (e) {
+          var d = e.data;
+          if (!d) return;
+
+          if (d.evt === "ready") {
+            if (d.which === "web2") {
+              send(f2, { cmd: "activate" });
+              preloadWeb1(false);
+            } else if (d.which === "web1") {
+              web1Ready = true;
+              var cb = pendingWeb1Ready;
+              pendingWeb1Ready = null;
+              if (cb) cb();
+              else send(f1, { cmd: "deactivate" });
+            }
+            return;
+          }
+
+          if (d.evt === "activity" && d.which === "web2") {
+            preloadWeb1(true);
+            return;
+          }
+
+          if (d.evt === "boundary") {
+            if (d.dir === "down" && active === "web2") toWeb1();
+            else if (d.dir === "up" && active === "web1") toWeb2();
+          }
+        });
+
+        // ---- initial paint --------------------------------------------------
+        showImmediate("web2");
+        window.setTimeout(function () {
+          preloadWeb1(false);
+        }, 180);
+      })();
+    </script>
+  </body>
+</html>
